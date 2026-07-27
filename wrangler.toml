@@ -8,7 +8,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "lms"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "b04ffac9-2dff-4c07-bfff-181f5101e936"
 
 # --- Объектное хранилище R2 (материалы, логотипы, картинки, PDF-дипломы) ---
 [[r2_buckets]]
