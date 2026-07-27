@@ -1,0 +1,21 @@
+{
+  "name": "lms-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create lms",
+    "db:migrate:local": "wrangler d1 execute lms --local --file=./migrations/0001_init.sql",
+    "db:seed:local": "wrangler d1 execute lms --local --file=./seed.sql",
+    "db:migrate": "wrangler d1 execute lms --remote --file=./migrations/0001_init.sql",
+    "db:seed": "wrangler d1 execute lms --remote --file=./seed.sql"
+  },
+  "dependencies": {
+    "hono": "^4.6.3"
+  },
+  "devDependencies": {
+    "wrangler": "^4.11.0"
+  }
+}

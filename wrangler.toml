@@ -1,0 +1,33 @@
+name = "lms-api"
+main = "src/index.js"
+compatibility_date = "2024-11-06"
+compatibility_flags = ["nodejs_compat"]
+
+# --- База данных D1 ---
+# После `wrangler d1 create lms` подставьте сюда database_id.
+[[d1_databases]]
+binding = "DB"
+database_name = "lms"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+# --- Объектное хранилище R2 (материалы, логотипы, картинки, PDF-дипломы) ---
+[[r2_buckets]]
+binding = "FILES"
+bucket_name = "lms-files"
+
+[vars]
+# ВАЖНО: при cookie-сессиях укажите ТОЧНЫЙ адрес фронтенда (не "*"),
+# например "https://pulss.pages.dev" — иначе браузер не примет httpOnly-cookie.
+# На время локальной разработки можно оставить "*".
+ALLOWED_ORIGIN = "*"
+# Адрес отправителя писем (должен быть подтверждён в Resend).
+EMAIL_FROM = "arved@example.ee"
+
+# --- Разбор очереди писем по расписанию (каждую минуту) ---
+[triggers]
+crons = ["* * * * *"]
+
+# Секреты задаются отдельно (не в этом файле):
+#   npx wrangler secret put RESEND_API_KEY      # ключ Resend для реальной отправки
+#   npx wrangler secret put MONTONIO_ACCESS_KEY # (опционально) приём оплаты
+#   npx wrangler secret put MONTONIO_SECRET_KEY
