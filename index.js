@@ -263,6 +263,18 @@ app.post("/api/students", async (c) => {
   const created = await createStudent(c.env, b);
   return c.json(created); // { id, password } — пароль возвращается создателю один раз
 });
+// Сброс пароля ученика (админ/учитель) — возвращает новый пароль один раз.
+app.post("/api/students/:id/reset-password", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const st = await c.env.DB.prepare("SELECT id, first_name, last_name, email FROM students WHERE id=?").bind(c.req.param("id")).first();
+  if (!st) return c.json({ error: "not_found" }, 404);
+  const password = genPass();
+  const hash = await hashPassword(password);
+  await c.env.DB.prepare("UPDATE students SET password_hash=? WHERE id=?").bind(hash, st.id).run();
+  await queueCredsEmail(c.env, st, password);
+  return c.json({ ok: true, password });
+});
 
 function genPass() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
@@ -327,7 +339,8 @@ app.post("/api/requests/:id/approve", async (c) => {
   if (!req) return c.json({ error: "not_found" }, 404);
   const created = await createStudent(c.env, req);
   await c.env.DB.prepare("DELETE FROM requests WHERE id=?").bind(req.id).run();
-  return c.json({ ok: true, student_id: created.id });
+  return c.json({ ok: true, student_id: created.id, password: created.password,
+    student: { first_name: req.first_name, last_name: req.last_name, email: req.email } });
 });
 // Отклонение заявки.
 app.delete("/api/requests/:id", async (c) => {
