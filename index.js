@@ -215,8 +215,8 @@ app.put("/api/settings", async (c) => {
 });
 
 /* ---------------- Группы ---------------- */
+// Публично: список групп нужен на странице регистрации (до входа).
 app.get("/api/groups", async (c) => {
-  if (!(await auth(c))) return c.json({ error: "unauthorized" }, 401);
   const r = await c.env.DB.prepare("SELECT id, name FROM groups ORDER BY name").all();
   return c.json(r.results || []);
 });
@@ -300,10 +300,13 @@ async function createStudent(env, b) {
 app.post("/api/requests", async (c) => {
   const b = await c.req.json();
   if (!b.first_name || !b.last_name || !b.isikukood || !b.email) return c.json({ error: "missing_fields" }, 400);
+  // Проверяем, что группа существует; иначе пишем null (защита от устаревшего id).
+  let gid = b.group_id || null;
+  if (gid) { const g = await c.env.DB.prepare("SELECT id FROM groups WHERE id=?").bind(gid).first(); if (!g) gid = null; }
   const id = uid("r_");
   await c.env.DB.prepare(
     "INSERT INTO requests (id, first_name, last_name, isikukood, email, group_id) VALUES (?,?,?,?,?,?)"
-  ).bind(id, b.first_name, b.last_name, b.isikukood, b.email, b.group_id || null).run();
+  ).bind(id, b.first_name, b.last_name, b.isikukood, b.email, gid).run();
   return c.json({ ok: true, id });
 });
 // Список заявок — для админа/учителя.
