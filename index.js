@@ -147,20 +147,34 @@ else{r.className='msg bad';r.textContent=d.error==='already_initialized'?'Admini
   return c.html(html);
 });
 
-/* ---------------- Login (сотрудник) ---------------- */
-app.post("/api/login", async (c) => {
-  const { login, password } = await c.req.json();
-  const u = await c.env.DB.prepare("SELECT * FROM staff WHERE login = ?").bind(login).first();
-  if (!u || !(await verifyPassword(password, u.password_hash))) {
-    return c.json({ error: "bad_credentials" }, 401);
-  }
+/* ---------------- Login (сотрудник или ученик) ---------------- */
+async function startSession(c, subjectId, role) {
   const token = uid("s_") + uid();
   const expires = new Date(Date.now() + 30 * 864e5).toISOString();
   await c.env.DB.prepare(
     "INSERT INTO sessions (token, subject_id, role, expires_at) VALUES (?,?,?,?)"
-  ).bind(token, u.id, u.role, expires).run();
+  ).bind(token, subjectId, role, expires).run();
   c.header("Set-Cookie", sessionCookie(token));
-  return c.json({ ok: true, user: { id: u.id, name: u.name, role: u.role, perms: JSON.parse(u.perms || "{}") } });
+}
+app.post("/api/login", async (c) => {
+  const { login, password } = await c.req.json();
+  const key = String(login || "").trim();
+  // 1) сотрудник по login
+  const u = await c.env.DB.prepare("SELECT * FROM staff WHERE login = ?").bind(key).first();
+  if (u && (await verifyPassword(password, u.password_hash))) {
+    await startSession(c, u.id, u.role);
+    return c.json({ ok: true, role: u.role, user: { id: u.id, name: u.name, role: u.role, perms: JSON.parse(u.perms || "{}") } });
+  }
+  // 2) ученик по «Имя Фамилия»
+  const st = await c.env.DB.prepare(
+    "SELECT * FROM students WHERE LOWER(first_name || ' ' || last_name) = LOWER(?)"
+  ).bind(key).first();
+  if (st && (await verifyPassword(password, st.password_hash))) {
+    if (st.archive_at && st.archive_at < nowISO().slice(0, 10)) return c.json({ error: "access_closed" }, 403);
+    await startSession(c, st.id, "student");
+    return c.json({ ok: true, role: "student", user: { id: st.id, first_name: st.first_name, last_name: st.last_name, email: st.email, group_id: st.group_id } });
+  }
+  return c.json({ error: "bad_credentials" }, 401);
 });
 
 app.post("/api/logout", async (c) => {
@@ -246,15 +260,8 @@ app.post("/api/students", async (c) => {
   if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
   const b = await c.req.json();
   if (!b.first_name || !b.last_name || !b.isikukood) return c.json({ error: "missing_fields" }, 400);
-  const id = uid("st_");
-  const password = b.password || genPass();
-  const hash = await hashPassword(password);
-  await c.env.DB.prepare(
-    "INSERT INTO students (id, first_name, last_name, isikukood, email, password_hash, group_id) VALUES (?,?,?,?,?,?,?)"
-  ).bind(id, b.first_name, b.last_name, b.isikukood, b.email || "", hash, b.group_id || null).run();
-  // очередь письма с данными для входа
-  await queueCredsEmail(c.env, { id, ...b }, password);
-  return c.json({ id, password }); // пароль возвращается создателю один раз
+  const created = await createStudent(c.env, b);
+  return c.json(created); // { id, password } — пароль возвращается создателю один раз
 });
 
 function genPass() {
@@ -276,6 +283,56 @@ async function queueCredsEmail(env, student, password) {
   await env.DB.prepare("INSERT INTO outbox (id, to_email, subject, body, type) VALUES (?,?,?,?,?)")
     .bind(uid("em_"), student.email || "", render(tpl?.subject), render(tpl?.body), "cred").run();
 }
+// Создать ученика (общая логика для ручного добавления и одобрения заявки).
+async function createStudent(env, b) {
+  const id = uid("st_");
+  const password = b.password || genPass();
+  const hash = await hashPassword(password);
+  await env.DB.prepare(
+    "INSERT INTO students (id, first_name, last_name, isikukood, email, password_hash, group_id) VALUES (?,?,?,?,?,?,?)"
+  ).bind(id, b.first_name, b.last_name, b.isikukood, b.email || "", hash, b.group_id || null).run();
+  await queueCredsEmail(env, { id, ...b }, password);
+  return { id, password };
+}
+
+/* ---------------- Заявки на регистрацию (Фаза 2) ---------------- */
+// Самостоятельная подача заявки — публично, без авторизации.
+app.post("/api/requests", async (c) => {
+  const b = await c.req.json();
+  if (!b.first_name || !b.last_name || !b.isikukood || !b.email) return c.json({ error: "missing_fields" }, 400);
+  const id = uid("r_");
+  await c.env.DB.prepare(
+    "INSERT INTO requests (id, first_name, last_name, isikukood, email, group_id) VALUES (?,?,?,?,?,?)"
+  ).bind(id, b.first_name, b.last_name, b.isikukood, b.email, b.group_id || null).run();
+  return c.json({ ok: true, id });
+});
+// Список заявок — для админа/учителя.
+app.get("/api/requests", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const r = await c.env.DB.prepare(
+    `SELECT r.id, r.first_name, r.last_name, r.isikukood, r.email, r.group_id, r.date, g.name AS group_name
+       FROM requests r LEFT JOIN groups g ON g.id = r.group_id ORDER BY r.date`
+  ).all();
+  return c.json(r.results || []);
+});
+// Одобрение заявки → создаётся ученик, заявка удаляется.
+app.post("/api/requests/:id/approve", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const req = await c.env.DB.prepare("SELECT * FROM requests WHERE id=?").bind(c.req.param("id")).first();
+  if (!req) return c.json({ error: "not_found" }, 404);
+  const created = await createStudent(c.env, req);
+  await c.env.DB.prepare("DELETE FROM requests WHERE id=?").bind(req.id).run();
+  return c.json({ ok: true, student_id: created.id });
+});
+// Отклонение заявки.
+app.delete("/api/requests/:id", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  await c.env.DB.prepare("DELETE FROM requests WHERE id=?").bind(c.req.param("id")).run();
+  return c.json({ ok: true });
+});
 
 /* ---------------- Счета (Arved) ---------------- */
 // Поиск предприятия в бизнес-регистре Эстонии по названию (прокси, чтобы обойти CORS браузера).
