@@ -208,9 +208,31 @@ app.put("/api/settings", async (c) => {
   const s = await auth(c);
   if (!requireRole(s, "admin")) return c.json({ error: "forbidden" }, 403);
   const b = await c.req.json();
+  const co = (v, d = null) => (v === undefined ? d : v); // undefined → null/default
   await c.env.DB.prepare(
-    "UPDATE settings SET platform_name=?, default_quiz_pass=?, archive_days=?, default_lang=?, cert_valid_months=?, updated_at=? WHERE id=1"
-  ).bind(b.platform_name, b.default_quiz_pass, b.archive_days, b.default_lang, b.cert_valid_months, nowISO()).run();
+    `UPDATE settings SET
+       platform_name=COALESCE(?,platform_name), default_quiz_pass=COALESCE(?,default_quiz_pass),
+       archive_days=COALESCE(?,archive_days), default_lang=COALESCE(?,default_lang), cert_valid_months=COALESCE(?,cert_valid_months),
+       invoice_default_price=COALESCE(?,invoice_default_price), invoice_due_days=COALESCE(?,invoice_due_days),
+       invoice_vat_rate=COALESCE(?,invoice_vat_rate), invoice_price_incl_vat=COALESCE(?,invoice_price_incl_vat),
+       seller_name=COALESCE(?,seller_name), seller_regcode=COALESCE(?,seller_regcode), seller_vatno=COALESCE(?,seller_vatno),
+       seller_address=COALESCE(?,seller_address), seller_iban=COALESCE(?,seller_iban), seller_bank=COALESCE(?,seller_bank),
+       seller_email=COALESCE(?,seller_email), seller_phone=COALESCE(?,seller_phone),
+       verify_base_url=COALESCE(?,verify_base_url), email_from=COALESCE(?,email_from), updated_at=?
+     WHERE id=1`
+  ).bind(
+    co(b.platform_name), co(b.default_quiz_pass), co(b.archive_days), co(b.default_lang), co(b.cert_valid_months),
+    co(b.invoice_default_price), co(b.invoice_due_days), co(b.invoice_vat_rate),
+    b.invoice_price_incl_vat === undefined ? null : (b.invoice_price_incl_vat ? 1 : 0),
+    co(b.seller_name), co(b.seller_regcode), co(b.seller_vatno), co(b.seller_address), co(b.seller_iban),
+    co(b.seller_bank), co(b.seller_email), co(b.seller_phone), co(b.verify_base_url), co(b.email_from), nowISO()
+  ).run();
+  if (b.templates && typeof b.templates === "object") {
+    for (const [type, tp] of Object.entries(b.templates)) {
+      await c.env.DB.prepare("INSERT OR REPLACE INTO email_templates (type, subject, body) VALUES (?,?,?)")
+        .bind(type, (tp && tp.subject) || "", (tp && tp.body) || "").run();
+    }
+  }
   return c.json({ ok: true });
 });
 
@@ -249,7 +271,8 @@ app.get("/api/students", async (c) => {
   if (!s) return c.json({ error: "unauthorized" }, 401);
   const r = await c.env.DB.prepare(
     `SELECT s.id, s.first_name, s.last_name, s.isikukood, s.email, s.group_id,
-            g.name AS group_name, s.status, s.last_active
+            g.name AS group_name, s.status, s.last_active, s.archived, s.archived_at,
+            s.completed_at, s.archive_at
        FROM students s LEFT JOIN groups g ON g.id = s.group_id
       ORDER BY s.last_name, s.first_name`
   ).all();
@@ -274,6 +297,41 @@ app.post("/api/students/:id/reset-password", async (c) => {
   await c.env.DB.prepare("UPDATE students SET password_hash=? WHERE id=?").bind(hash, st.id).run();
   await queueCredsEmail(c.env, st, password);
   return c.json({ ok: true, password });
+});
+// Редактирование ученика (имя, isikukood, e-mail, группа).
+app.put("/api/students/:id", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const b = await c.req.json();
+  let gid = b.group_id === undefined ? undefined : (b.group_id || null);
+  if (gid) { const g = await c.env.DB.prepare("SELECT id FROM groups WHERE id=?").bind(gid).first(); if (!g) gid = null; }
+  const co = (v) => (v === undefined ? null : v);
+  await c.env.DB.prepare(
+    `UPDATE students SET first_name=COALESCE(?,first_name), last_name=COALESCE(?,last_name),
+       isikukood=COALESCE(?,isikukood), email=COALESCE(?,email), group_id=CASE WHEN ? THEN ? ELSE group_id END
+     WHERE id=?`
+  ).bind(co(b.first_name), co(b.last_name), co(b.isikukood), co(b.email),
+    gid === undefined ? 0 : 1, gid === undefined ? null : gid, c.req.param("id")).run();
+  return c.json({ ok: true });
+});
+// Архивация / возврат из архива (ручная).
+app.post("/api/students/:id/archive", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const { archived } = await c.req.json();
+  if (archived) {
+    await c.env.DB.prepare("UPDATE students SET archived=1, archived_at=? WHERE id=?").bind(nowISO().slice(0, 10), c.req.param("id")).run();
+  } else {
+    await c.env.DB.prepare("UPDATE students SET archived=0, archived_at=NULL, completed_at=NULL, archive_at=NULL WHERE id=?").bind(c.req.param("id")).run();
+  }
+  return c.json({ ok: true });
+});
+// Удаление ученика (GDPR-каскад).
+app.delete("/api/students/:id", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  await c.env.DB.prepare("DELETE FROM students WHERE id=?").bind(c.req.param("id")).run();
+  return c.json({ ok: true });
 });
 
 function genPass() {
