@@ -2110,7 +2110,12 @@ var app = new Hono2();
 app.use("*", async (c, next) => {
   const allowed = c.env.ALLOWED_ORIGIN || "*";
   const reqOrigin = c.req.header("Origin") || "";
-  const origin = allowed === "*" ? reqOrigin || "*" : allowed;
+  let origin;
+  if (allowed === "*") origin = reqOrigin || "*";
+  else {
+    const list = allowed.split(",").map((s) => s.trim()).filter(Boolean);
+    origin = list.includes(reqOrigin) ? reqOrigin : list[0];
+  }
   if (c.req.method === "OPTIONS") {
     return new Response(null, { headers: cors(origin) });
   }
@@ -2940,7 +2945,6 @@ app.post("/api/invoices", async (c) => {
   if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
   const b = await c.req.json();
   if (!b.buyer?.name) return c.json({ error: "missing_buyer" }, 400);
-  if (!(b.participants || []).length) return c.json({ error: "no_participants" }, 400);
   await c.env.DB.prepare("INSERT OR IGNORE INTO settings (id) VALUES (1)").run();
   await c.env.DB.prepare("UPDATE settings SET invoice_seq = invoice_seq + 1 WHERE id = 1").run();
   const seqRow = await c.env.DB.prepare("SELECT invoice_seq FROM settings WHERE id = 1").first();
