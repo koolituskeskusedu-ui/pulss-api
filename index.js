@@ -2361,7 +2361,14 @@ app.get("/api/students", async (c) => {
        FROM students s LEFT JOIN groups g ON g.id = s.group_id
       ORDER BY s.last_name, s.first_name`
   ).all();
-  return c.json(r.results || []);
+  let list = r.results || [];
+  if (s.role === "student") return c.json(list.filter((x) => x.id === s.id));
+  const sc = await scopeFor(c.env, s);
+  if (sc.scoped) {
+    const gs = new Set(sc.groupIds);
+    list = list.filter((x) => gs.has(x.group_id));
+  }
+  return c.json(list);
 });
 app.post("/api/students", async (c) => {
   const s = await auth(c);
@@ -2431,6 +2438,7 @@ app.delete("/api/students/:id", async (c) => {
     "DELETE FROM attendance WHERE student_id=?",
     "DELETE FROM messages WHERE student_id=?",
     "DELETE FROM notifications WHERE student_id=?",
+    "DELETE FROM certificates WHERE student_id=?",
     "DELETE FROM students WHERE id=?"
   ]) {
     await c.env.DB.prepare(sql).bind(id).run();
@@ -2480,6 +2488,17 @@ async function setStaffGroups(env, id, scopeAll, groups) {
       await env.DB.prepare("INSERT OR IGNORE INTO staff_groups (staff_id, group_id) VALUES (?,?)").bind(id, gid).run();
     }
   }
+}
+async function scopeFor(env, s) {
+  if (!s || s.role === "student" || s.role === "admin") return { scoped: false };
+  const st = await env.DB.prepare("SELECT scope_all FROM staff WHERE id=?").bind(s.id).first();
+  if (!st || st.scope_all) return { scoped: false };
+  const g = await env.DB.prepare("SELECT group_id FROM staff_groups WHERE staff_id=?").bind(s.id).all();
+  const groupIds = (g.results || []).map((x) => x.group_id);
+  if (!groupIds.length) return { scoped: true, groupIds: [], studentIds: [] };
+  const ph = groupIds.map(() => "?").join(",");
+  const sr = await env.DB.prepare(`SELECT id FROM students WHERE group_id IN (${ph})`).bind(...groupIds).all();
+  return { scoped: true, groupIds, studentIds: (sr.results || []).map((x) => x.id) };
 }
 app.get("/api/staff", async (c) => {
   const s = await auth(c);
@@ -2566,7 +2585,13 @@ app.get("/api/requests", async (c) => {
     `SELECT r.id, r.first_name, r.last_name, r.isikukood, r.email, r.group_id, r.date, g.name AS group_name
        FROM requests r LEFT JOIN groups g ON g.id = r.group_id ORDER BY r.date`
   ).all();
-  return c.json(r.results || []);
+  let list = r.results || [];
+  const sc = await scopeFor(c.env, s);
+  if (sc.scoped) {
+    const gs = new Set(sc.groupIds);
+    list = list.filter((x) => gs.has(x.group_id));
+  }
+  return c.json(list);
 });
 app.post("/api/requests/:id/approve", async (c) => {
   const s = await auth(c);
@@ -2671,12 +2696,18 @@ app.get("/api/learning", async (c) => {
     q("SELECT student_id, lesson_id, answers_json, layout_json FROM quiz_attempts").all(),
     q("SELECT id, student_id, course_id, homework_id, file_name, file_key, date, grade, feedback, graded_by, graded_at FROM submissions").all()
   ]);
+  const sc = await scopeFor(c.env, s);
+  const flt = (rows) => {
+    if (!sc.scoped) return rows || [];
+    const ids = new Set(sc.studentIds);
+    return (rows || []).filter((r) => ids.has(r.student_id));
+  };
   return c.json({
-    enrollments: en.results || [],
-    progress: pr.results || [],
-    quiz_scores: qs.results || [],
-    quiz_attempts: qa.results || [],
-    submissions: sub.results || []
+    enrollments: flt(en.results),
+    progress: flt(pr.results),
+    quiz_scores: flt(qs.results),
+    quiz_attempts: flt(qa.results),
+    submissions: flt(sub.results)
   });
 });
 app.post("/api/enroll", async (c) => {
@@ -2741,16 +2772,21 @@ app.get("/api/meetings", async (c) => {
   if (!s) return c.json({ error: "unauthorized" }, 401);
   if (s.role === "student") {
     const st = await c.env.DB.prepare("SELECT group_id FROM students WHERE id=?").bind(s.id).first();
-    const rows2 = await c.env.DB.prepare("SELECT * FROM meetings WHERE group_id=? ORDER BY date, time").bind(st?.group_id || "").all();
-    return c.json((rows2.results || []).map((m) => ({ ...m, attended: {} })));
+    const rows = await c.env.DB.prepare("SELECT * FROM meetings WHERE group_id=? ORDER BY date, time").bind(st?.group_id || "").all();
+    return c.json((rows.results || []).map((m) => ({ ...m, attended: {} })));
   }
-  const rows = await c.env.DB.prepare("SELECT * FROM meetings ORDER BY date, time").all();
+  let mrows = (await c.env.DB.prepare("SELECT * FROM meetings ORDER BY date, time").all()).results || [];
+  const sc = await scopeFor(c.env, s);
+  if (sc.scoped) {
+    const gs = new Set(sc.groupIds);
+    mrows = mrows.filter((m) => gs.has(m.group_id));
+  }
   const att = await c.env.DB.prepare("SELECT meeting_id, student_id, present FROM attendance").all();
   const byM = {};
   for (const a of att.results || []) {
     (byM[a.meeting_id] = byM[a.meeting_id] || {})[a.student_id] = !!a.present;
   }
-  return c.json((rows.results || []).map((m) => ({ ...m, attended: byM[m.id] || {} })));
+  return c.json(mrows.map((m) => ({ ...m, attended: byM[m.id] || {} })));
 });
 app.post("/api/meetings", async (c) => {
   const s = await auth(c);
@@ -2791,7 +2827,13 @@ app.get("/api/messages", async (c) => {
   const s = await auth(c);
   if (!s) return c.json({ error: "unauthorized" }, 401);
   const r = s.role === "student" ? await c.env.DB.prepare("SELECT id, student_id, sender, text, ts, read FROM messages WHERE student_id=? ORDER BY ts").bind(s.id).all() : await c.env.DB.prepare("SELECT id, student_id, sender, text, ts, read FROM messages ORDER BY ts").all();
-  return c.json(r.results || []);
+  let list = r.results || [];
+  const sc = await scopeFor(c.env, s);
+  if (sc.scoped) {
+    const ids = new Set(sc.studentIds);
+    list = list.filter((m) => ids.has(m.student_id));
+  }
+  return c.json(list);
 });
 app.post("/api/messages", async (c) => {
   const s = await auth(c);
@@ -2859,6 +2901,7 @@ app.post("/api/invoices", async (c) => {
   const b = await c.req.json();
   if (!b.buyer?.name) return c.json({ error: "missing_buyer" }, 400);
   if (!(b.participants || []).length) return c.json({ error: "no_participants" }, 400);
+  await c.env.DB.prepare("INSERT OR IGNORE INTO settings (id) VALUES (1)").run();
   await c.env.DB.prepare("UPDATE settings SET invoice_seq = invoice_seq + 1 WHERE id = 1").run();
   const seqRow = await c.env.DB.prepare("SELECT invoice_seq FROM settings WHERE id = 1").first();
   const number = seqRow.invoice_seq;
@@ -2909,6 +2952,44 @@ app.delete("/api/invoices/:id", async (c) => {
   const s = await auth(c);
   if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
   await c.env.DB.prepare("DELETE FROM invoices WHERE id=?").bind(c.req.param("id")).run();
+  return c.json({ ok: true });
+});
+app.put("/api/invoices/:id", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const b = await c.req.json();
+  const id = c.req.param("id");
+  const iv = await c.env.DB.prepare("SELECT credited_by, kind FROM invoices WHERE id=?").bind(id).first();
+  if (!iv) return c.json({ error: "not_found" }, 404);
+  if (iv.credited_by || iv.kind === "credit") return c.json({ error: "locked" }, 409);
+  await c.env.DB.prepare(
+    `UPDATE invoices SET mode=?, group_id=?, course_id=?, buyer_name=?, buyer_regcode=?, buyer_vatno=?, buyer_address=?, buyer_email=?,
+       vat_rate=?, price_includes_vat=?, note=?, date=?, due_date=? WHERE id=?`
+  ).bind(
+    b.mode || "group",
+    b.groupId || null,
+    b.courseId || null,
+    b.buyer?.name || "",
+    b.buyer?.regCode || "",
+    b.buyer?.vatNo || "",
+    b.buyer?.address || "",
+    b.buyer?.email || "",
+    b.vatRate ?? 24,
+    b.priceIncludesVat ? 1 : 0,
+    b.note || "",
+    b.date || nowISO().slice(0, 10),
+    b.dueDate || null,
+    id
+  ).run();
+  await c.env.DB.prepare("DELETE FROM invoice_participants WHERE invoice_id=?").bind(id).run();
+  for (const p of b.participants || []) {
+    await c.env.DB.prepare("INSERT INTO invoice_participants (id, invoice_id, student_id, name, isikukood) VALUES (?,?,?,?,?)").bind(uid("ip_"), id, p.studentId || null, p.name, p.isikukood || "").run();
+  }
+  await c.env.DB.prepare("DELETE FROM invoice_items WHERE invoice_id=?").bind(id).run();
+  let pos = 0;
+  for (const it of b.items || []) {
+    await c.env.DB.prepare("INSERT INTO invoice_items (id, invoice_id, descr, qty, price, position) VALUES (?,?,?,?,?,?)").bind(uid("ii_"), id, it.desc || "", it.qty || 0, it.price || 0, pos++).run();
+  }
   return c.json({ ok: true });
 });
 app.post("/api/invoices/:id/credit", async (c) => {
@@ -2999,6 +3080,42 @@ app.get("/api/outbox", async (c) => {
   if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
   const r = await c.env.DB.prepare("SELECT id, to_email, subject, type, ts, status, error, sent_at FROM outbox ORDER BY ts DESC LIMIT 100").all();
   return c.json(r.results || []);
+});
+app.get("/api/certificates", async (c) => {
+  const s = await auth(c);
+  if (!s) return c.json({ error: "unauthorized" }, 401);
+  const r = s.role === "student" ? await c.env.DB.prepare("SELECT id, number, student_id, course_id, date, valid_until, pdf_key FROM certificates WHERE student_id=? ORDER BY number").bind(s.id).all() : await c.env.DB.prepare("SELECT id, number, student_id, course_id, date, valid_until, pdf_key FROM certificates ORDER BY number").all();
+  return c.json(r.results || []);
+});
+app.post("/api/certificates", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const b = await c.req.json();
+  if (!b.student_id || !b.course_id) return c.json({ error: "missing_fields" }, 400);
+  const ex = await c.env.DB.prepare("SELECT id, number, date, valid_until FROM certificates WHERE student_id=? AND course_id=?").bind(b.student_id, b.course_id).first();
+  if (ex) return c.json({ id: ex.id, number: ex.number, date: ex.date, valid_until: ex.valid_until, existed: true });
+  const mx = await c.env.DB.prepare("SELECT COALESCE(MAX(number),0) mx FROM certificates").first();
+  const number = (mx?.mx || 0) + 1;
+  const id = uid("ct_");
+  const date = nowISO().slice(0, 10);
+  const validUntil = b.valid_until || null;
+  await c.env.DB.prepare("INSERT INTO certificates (id, number, student_id, course_id, date, valid_until, pdf_key) VALUES (?,?,?,?,?,?,?)").bind(id, number, b.student_id, b.course_id, date, validUntil, b.pdf_key || null).run();
+  const set = await c.env.DB.prepare("SELECT archive_days FROM settings WHERE id=1").first();
+  const archAt = new Date(Date.parse(date + "T00:00:00Z") + (set?.archive_days || 30) * 864e5).toISOString().slice(0, 10);
+  await c.env.DB.prepare("UPDATE students SET completed_at=?, archive_at=? WHERE id=?").bind(date, archAt, b.student_id).run();
+  return c.json({ id, number, date, valid_until: validUntil });
+});
+app.delete("/api/certificates/:id", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  const ct = await c.env.DB.prepare("SELECT student_id FROM certificates WHERE id=?").bind(id).first();
+  await c.env.DB.prepare("DELETE FROM certificates WHERE id=?").bind(id).run();
+  if (ct) {
+    const left = await c.env.DB.prepare("SELECT count(*) n FROM certificates WHERE student_id=?").bind(ct.student_id).first();
+    if ((left?.n || 0) === 0) await c.env.DB.prepare("UPDATE students SET completed_at=NULL, archive_at=NULL WHERE id=?").bind(ct.student_id).run();
+  }
+  return c.json({ ok: true });
 });
 app.get("/api/verify", async (c) => {
   const number = c.req.query("number");
