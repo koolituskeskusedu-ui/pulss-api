@@ -2471,7 +2471,7 @@ async function queueCredsEmail(env, student, password) {
     platform: set?.platform_name || "Kursused"
   };
   const render = (str) => String(str || "").replace(/\{(\w+)\}/g, (m, k) => vars[k] != null ? vars[k] : m);
-  await env.DB.prepare("INSERT INTO outbox (id, to_email, subject, body, type) VALUES (?,?,?,?,?)").bind(uid("em_"), student.email || "", render(tpl?.subject), render(tpl?.body), "cred").run();
+  await enqueueAndSend(env, { to: student.email || "", subject: render(tpl?.subject), body: render(tpl?.body), type: "cred" });
 }
 async function createStudent(env, b) {
   const id = uid("st_");
@@ -3064,6 +3064,19 @@ async function sendEmail(env, msg) {
   if (!res.ok) throw new Error("brevo_" + res.status + ": " + (await res.text()).slice(0, 200));
   return { ok: true, status: res.status };
 }
+async function enqueueAndSend(env, { to, subject, body, type }) {
+  const id = uid("em_");
+  await env.DB.prepare("INSERT INTO outbox (id, to_email, subject, body, type) VALUES (?,?,?,?,?)").bind(id, to || "", subject || "", body || "", type || "info").run();
+  try {
+    await sendEmail(env, { to, subject, body });
+    await env.DB.prepare("UPDATE outbox SET sent=1, status='sent', sent_at=? WHERE id=?").bind(nowISO(), id).run();
+    return { ok: true, sent: true };
+  } catch (e) {
+    const err = String(e.message || e).slice(0, 300);
+    await env.DB.prepare("UPDATE outbox SET status='error', error=? WHERE id=?").bind(err, id).run();
+    return { ok: true, sent: false, error: err };
+  }
+}
 async function flushOutbox(env, limit = 50) {
   const rows = await env.DB.prepare(
     "SELECT * FROM outbox WHERE status='pending' ORDER BY ts LIMIT ?"
@@ -3086,8 +3099,8 @@ app.post("/api/outbox", async (c) => {
   if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
   const b = await c.req.json();
   if (!b.to || !b.subject) return c.json({ error: "missing_fields" }, 400);
-  await c.env.DB.prepare("INSERT INTO outbox (id, to_email, subject, body, type) VALUES (?,?,?,?,?)").bind(uid("em_"), b.to, b.subject, b.body || "", b.type || "info").run();
-  return c.json({ ok: true });
+  const r = await enqueueAndSend(c.env, b);
+  return c.json(r);
 });
 app.post("/api/outbox/flush", async (c) => {
   const s = await auth(c);
