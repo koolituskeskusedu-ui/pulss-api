@@ -3075,6 +3075,14 @@ async function flushOutbox(env, limit = 50) {
   }
   return { sent, failed, picked: (rows.results || []).length };
 }
+app.post("/api/outbox", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const b = await c.req.json();
+  if (!b.to || !b.subject) return c.json({ error: "missing_fields" }, 400);
+  await c.env.DB.prepare("INSERT INTO outbox (id, to_email, subject, body, type) VALUES (?,?,?,?,?)").bind(uid("em_"), b.to, b.subject, b.body || "", b.type || "info").run();
+  return c.json({ ok: true });
+});
 app.post("/api/outbox/flush", async (c) => {
   const s = await auth(c);
   if (!requireRole(s, "admin")) return c.json({ error: "forbidden" }, 403);
