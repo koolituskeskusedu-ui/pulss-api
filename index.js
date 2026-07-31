@@ -1,4 +1,4 @@
-// node_modules/hono/dist/compose.js
+// cloudflare/node_modules/hono/dist/compose.js
 var compose = (middleware, onError, onNotFound) => {
   return (context, next) => {
     let index = -1;
@@ -42,10 +42,10 @@ var compose = (middleware, onError, onNotFound) => {
   };
 };
 
-// node_modules/hono/dist/request/constants.js
+// cloudflare/node_modules/hono/dist/request/constants.js
 var GET_MATCH_RESULT = /* @__PURE__ */ Symbol();
 
-// node_modules/hono/dist/utils/buffer.js
+// cloudflare/node_modules/hono/dist/utils/buffer.js
 var bufferToFormData = (arrayBuffer, contentType) => {
   const response = new Response(arrayBuffer, {
     headers: {
@@ -56,7 +56,7 @@ var bufferToFormData = (arrayBuffer, contentType) => {
   return response.formData();
 };
 
-// node_modules/hono/dist/utils/body.js
+// cloudflare/node_modules/hono/dist/utils/body.js
 var isRawRequest = (request) => "headers" in request;
 var parseBody = async (request, options = /* @__PURE__ */ Object.create(null)) => {
   const { all = false, dot = false } = options;
@@ -142,7 +142,7 @@ var handleParsingNestedValues = (form, key, value) => {
   });
 };
 
-// node_modules/hono/dist/utils/url.js
+// cloudflare/node_modules/hono/dist/utils/url.js
 var splitPath = (path) => {
   const paths = path.split("/");
   if (paths[0] === "") {
@@ -346,7 +346,7 @@ var getQueryParams = (url, key) => {
 };
 var decodeURIComponent_ = decodeURIComponent;
 
-// node_modules/hono/dist/request.js
+// cloudflare/node_modules/hono/dist/request.js
 var tryDecodeURIComponent = (str) => tryDecode(str, decodeURIComponent_);
 var HonoRequest = class {
   /**
@@ -629,7 +629,7 @@ var HonoRequest = class {
   }
 };
 
-// node_modules/hono/dist/utils/html.js
+// cloudflare/node_modules/hono/dist/utils/html.js
 var HtmlEscapedCallbackPhase = {
   Stringify: 1,
   BeforeStream: 2,
@@ -671,7 +671,7 @@ var resolveCallback = async (str, phase, preserveCallbacks, context, buffer) => 
   }
 };
 
-// node_modules/hono/dist/context.js
+// cloudflare/node_modules/hono/dist/context.js
 var TEXT_PLAIN = "text/plain; charset=UTF-8";
 var setDefaultContentType = (contentType, headers) => {
   return {
@@ -1078,7 +1078,7 @@ var Context = class {
   };
 };
 
-// node_modules/hono/dist/router.js
+// cloudflare/node_modules/hono/dist/router.js
 var METHOD_NAME_ALL = "ALL";
 var METHOD_NAME_ALL_LOWERCASE = "all";
 var METHODS = ["get", "post", "put", "delete", "options", "patch"];
@@ -1086,10 +1086,10 @@ var MESSAGE_MATCHER_IS_ALREADY_BUILT = "Can not add a route since the matcher is
 var UnsupportedPathError = class extends Error {
 };
 
-// node_modules/hono/dist/utils/constants.js
+// cloudflare/node_modules/hono/dist/utils/constants.js
 var COMPOSED_HANDLER = "__COMPOSED_HANDLER";
 
-// node_modules/hono/dist/hono-base.js
+// cloudflare/node_modules/hono/dist/hono-base.js
 var notFoundHandler = (c) => {
   return c.text("404 Not Found", 404);
 };
@@ -1465,7 +1465,7 @@ var Hono = class _Hono {
   };
 };
 
-// node_modules/hono/dist/router/reg-exp-router/matcher.js
+// cloudflare/node_modules/hono/dist/router/reg-exp-router/matcher.js
 var emptyParam = [];
 function match(method, path) {
   const matchers = this.buildAllMatchers();
@@ -1486,7 +1486,7 @@ function match(method, path) {
   return match2(method, path);
 }
 
-// node_modules/hono/dist/router/reg-exp-router/node.js
+// cloudflare/node_modules/hono/dist/router/reg-exp-router/node.js
 var LABEL_REG_EXP_STR = "[^/]+";
 var ONLY_WILDCARD_REG_EXP_STR = ".*";
 var TAIL_WILDCARD_REG_EXP_STR = "(?:|/.*)";
@@ -1594,7 +1594,7 @@ var Node = class _Node {
   }
 };
 
-// node_modules/hono/dist/router/reg-exp-router/trie.js
+// cloudflare/node_modules/hono/dist/router/reg-exp-router/trie.js
 var Trie = class {
   #context = { varIndex: 0 };
   #root = new Node();
@@ -1650,7 +1650,7 @@ var Trie = class {
   }
 };
 
-// node_modules/hono/dist/router/reg-exp-router/router.js
+// cloudflare/node_modules/hono/dist/router/reg-exp-router/router.js
 var nullMatcher = [/^$/, [], /* @__PURE__ */ Object.create(null)];
 var wildcardRegExpCache = /* @__PURE__ */ Object.create(null);
 function buildWildcardRegExp(path) {
@@ -1829,7 +1829,7 @@ var RegExpRouter = class {
   }
 };
 
-// node_modules/hono/dist/router/smart-router/router.js
+// cloudflare/node_modules/hono/dist/router/smart-router/router.js
 var SmartRouter = class {
   name = "SmartRouter";
   #routers = [];
@@ -1884,7 +1884,7 @@ var SmartRouter = class {
   }
 };
 
-// node_modules/hono/dist/router/trie-router/node.js
+// cloudflare/node_modules/hono/dist/router/trie-router/node.js
 var emptyParams = /* @__PURE__ */ Object.create(null);
 var hasChildren = (children) => {
   for (const _ in children) {
@@ -2068,7 +2068,7 @@ var Node2 = class _Node2 {
   }
 };
 
-// node_modules/hono/dist/router/trie-router/router.js
+// cloudflare/node_modules/hono/dist/router/trie-router/router.js
 var TrieRouter = class {
   name = "TrieRouter";
   #node;
@@ -2090,7 +2090,7 @@ var TrieRouter = class {
   }
 };
 
-// node_modules/hono/dist/hono.js
+// cloudflare/node_modules/hono/dist/hono.js
 var Hono2 = class extends Hono {
   /**
    * Creates an instance of the Hono class.
@@ -2105,7 +2105,7 @@ var Hono2 = class extends Hono {
   }
 };
 
-// src/index.js
+// cloudflare/src/index.js
 var app = new Hono2();
 app.use("*", async (c, next) => {
   const allowed = c.env.ALLOWED_ORIGIN || "*";
@@ -3155,8 +3155,19 @@ app.get("/api/outbox", async (c) => {
 app.get("/api/certificates", async (c) => {
   const s = await auth(c);
   if (!s) return c.json({ error: "unauthorized" }, 401);
-  const r = s.role === "student" ? await c.env.DB.prepare("SELECT id, number, student_id, course_id, date, valid_until, pdf_key FROM certificates WHERE student_id=? ORDER BY number").bind(s.id).all() : await c.env.DB.prepare("SELECT id, number, student_id, course_id, date, valid_until, pdf_key FROM certificates ORDER BY number").all();
+  const r = s.role === "student" ? await c.env.DB.prepare("SELECT id, number, student_id, course_id, date, valid_until, pdf_key, signed_key, signed_name, signed_at FROM certificates WHERE student_id=? ORDER BY number").bind(s.id).all() : await c.env.DB.prepare("SELECT id, number, student_id, course_id, date, valid_until, pdf_key, signed_key, signed_name, signed_at FROM certificates ORDER BY number").all();
   return c.json(r.results || []);
+});
+app.post("/api/certificates/:id/signed", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  const b = await c.req.json();
+  if (!b.signed_key) return c.json({ error: "missing_fields" }, 400);
+  const ex = await c.env.DB.prepare("SELECT id FROM certificates WHERE id=?").bind(id).first();
+  if (!ex) return c.json({ error: "not_found" }, 404);
+  await c.env.DB.prepare("UPDATE certificates SET signed_key=?, signed_name=?, signed_at=? WHERE id=?").bind(b.signed_key, b.signed_name || "", nowISO(), id).run();
+  return c.json({ ok: true, signed_at: nowISO() });
 });
 app.post("/api/certificates", async (c) => {
   const s = await auth(c);
