@@ -3080,24 +3080,23 @@ async function sendEmail(env, msg) {
   const from = msg.from || env.EMAIL_FROM;
   const key = env.BREVO_API_KEY;
   if (!key || !from) throw new Error("email_not_configured");
+  const payload = { sender: { email: from }, to: [{ email: msg.to }], subject: msg.subject, textContent: msg.body };
+  if (msg.attachment && msg.attachment.content && msg.attachment.name) {
+    payload.attachment = [{ content: msg.attachment.content, name: msg.attachment.name }];
+  }
   const res = await fetch("https://api.brevo.com/v3/smtp/email", {
     method: "POST",
     headers: { "api-key": key, "Content-Type": "application/json", "Accept": "application/json" },
-    body: JSON.stringify({
-      sender: { email: from },
-      to: [{ email: msg.to }],
-      subject: msg.subject,
-      textContent: msg.body
-    })
+    body: JSON.stringify(payload)
   });
   if (!res.ok) throw new Error("brevo_" + res.status + ": " + (await res.text()).slice(0, 200));
   return { ok: true, status: res.status };
 }
-async function enqueueAndSend(env, { to, subject, body, type }) {
+async function enqueueAndSend(env, { to, subject, body, type, attachment }) {
   const id = uid("em_");
   await env.DB.prepare("INSERT INTO outbox (id, to_email, subject, body, type) VALUES (?,?,?,?,?)").bind(id, to || "", subject || "", body || "", type || "info").run();
   try {
-    await sendEmail(env, { to, subject, body });
+    await sendEmail(env, { to, subject, body, attachment });
     await env.DB.prepare("UPDATE outbox SET sent=1, status='sent', sent_at=? WHERE id=?").bind(nowISO(), id).run();
     return { ok: true, sent: true };
   } catch (e) {
@@ -3128,7 +3127,7 @@ app.post("/api/outbox", async (c) => {
   if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
   const b = await c.req.json();
   if (!b.to || !b.subject) return c.json({ error: "missing_fields" }, 400);
-  const r = await enqueueAndSend(c.env, b);
+  const r = await enqueueAndSend(c.env, { to: b.to, subject: b.subject, body: b.body, type: b.type, attachment: b.attachment });
   return c.json(r);
 });
 app.post("/api/outbox/flush", async (c) => {
