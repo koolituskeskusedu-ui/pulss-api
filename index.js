@@ -2243,7 +2243,8 @@ app.post("/api/login", async (c) => {
   const u = await c.env.DB.prepare("SELECT * FROM staff WHERE login = ?").bind(key).first();
   if (u && await verifyPassword(password, u.password_hash)) {
     await startSession(c, u.id, u.role);
-    return c.json({ ok: true, role: u.role, user: { id: u.id, name: u.name, role: u.role, perms: JSON.parse(u.perms || "{}") } });
+    const groups = u.scope_all ? "all" : await staffGroupIds(c.env, u.id);
+    return c.json({ ok: true, role: u.role, user: { id: u.id, name: u.name, login: u.login, role: u.role, perms: JSON.parse(u.perms || "{}"), groups } });
   }
   const st = await c.env.DB.prepare(
     "SELECT * FROM students WHERE LOWER(first_name || ' ' || last_name) = LOWER(?)"
@@ -2268,8 +2269,9 @@ app.get("/api/me", async (c) => {
     const u2 = await c.env.DB.prepare("SELECT id, first_name, last_name, email, group_id FROM students WHERE id=?").bind(s.id).first();
     return c.json({ role: "student", user: u2 || { id: s.id } });
   }
-  const u = await c.env.DB.prepare("SELECT id, name, login, role, perms FROM staff WHERE id=?").bind(s.id).first();
-  return c.json({ role: s.role, user: u ? { ...u, perms: JSON.parse(u.perms || "{}") } : { id: s.id } });
+  const u = await c.env.DB.prepare("SELECT id, name, login, role, perms, scope_all FROM staff WHERE id=?").bind(s.id).first();
+  const groups = u ? u.scope_all ? "all" : await staffGroupIds(c.env, u.id) : "all";
+  return c.json({ role: s.role, user: u ? { ...u, perms: JSON.parse(u.perms || "{}"), groups } : { id: s.id } });
 });
 app.get("/api/settings", async (c) => {
   const s = await c.env.DB.prepare("SELECT * FROM settings WHERE id = 1").first();
@@ -2464,6 +2466,82 @@ async function createStudent(env, b) {
   await queueCredsEmail(env, { id, ...b }, password);
   return { id, password };
 }
+async function staffGroupIds(env, id) {
+  const r = await env.DB.prepare("SELECT group_id FROM staff_groups WHERE staff_id=?").bind(id).all();
+  return (r.results || []).map((x) => x.group_id);
+}
+async function setStaffGroups(env, id, scopeAll, groups) {
+  await env.DB.prepare("DELETE FROM staff_groups WHERE staff_id=?").bind(id).run();
+  if (!scopeAll && Array.isArray(groups)) {
+    for (const gid of groups) {
+      await env.DB.prepare("INSERT OR IGNORE INTO staff_groups (staff_id, group_id) VALUES (?,?)").bind(id, gid).run();
+    }
+  }
+}
+app.get("/api/staff", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin")) return c.json({ error: "forbidden" }, 403);
+  const r = await c.env.DB.prepare("SELECT id, name, login, role, perms, scope_all FROM staff ORDER BY name").all();
+  const list = [];
+  for (const u of r.results || []) {
+    const groups = u.scope_all ? "all" : await staffGroupIds(c.env, u.id);
+    list.push({ id: u.id, name: u.name, login: u.login, role: u.role, perms: JSON.parse(u.perms || "{}"), scope_all: u.scope_all, groups });
+  }
+  return c.json(list);
+});
+app.post("/api/staff", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin")) return c.json({ error: "forbidden" }, 403);
+  const b = await c.req.json();
+  if (!b.name || !b.login) return c.json({ error: "missing_fields" }, 400);
+  const dup = await c.env.DB.prepare("SELECT id FROM staff WHERE login=?").bind(b.login).first();
+  if (dup) return c.json({ error: "login_taken" }, 409);
+  const id = uid("u_");
+  const password = b.password || genPass();
+  const hash = await hashPassword(password);
+  const role = b.role === "admin" ? "admin" : "teacher";
+  const scopeAll = role === "admin" ? 1 : b.groups === "all" || !Array.isArray(b.groups) ? 1 : 0;
+  await c.env.DB.prepare("INSERT INTO staff (id,name,login,password_hash,role,perms,scope_all) VALUES (?,?,?,?,?,?,?)").bind(id, b.name, b.login, hash, role, JSON.stringify(b.perms || {}), scopeAll).run();
+  await setStaffGroups(c.env, id, scopeAll, b.groups);
+  return c.json({ id, password });
+});
+app.put("/api/staff/:id", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin")) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  const b = await c.req.json();
+  if (b.login) {
+    const dup = await c.env.DB.prepare("SELECT id FROM staff WHERE login=? AND id<>?").bind(b.login, id).first();
+    if (dup) return c.json({ error: "login_taken" }, 409);
+  }
+  const role = b.role === "admin" ? "admin" : "teacher";
+  const scopeAll = role === "admin" ? 1 : b.groups === "all" || !Array.isArray(b.groups) ? 1 : 0;
+  await c.env.DB.prepare("UPDATE staff SET name=?, login=?, role=?, perms=?, scope_all=? WHERE id=?").bind(b.name, b.login, role, JSON.stringify(b.perms || {}), scopeAll, id).run();
+  await setStaffGroups(c.env, id, scopeAll, b.groups);
+  return c.json({ ok: true });
+});
+app.post("/api/staff/:id/reset-password", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin")) return c.json({ error: "forbidden" }, 403);
+  const password = genPass();
+  const hash = await hashPassword(password);
+  await c.env.DB.prepare("UPDATE staff SET password_hash=? WHERE id=?").bind(hash, c.req.param("id")).run();
+  return c.json({ ok: true, password });
+});
+app.delete("/api/staff/:id", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin")) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  const target = await c.env.DB.prepare("SELECT role FROM staff WHERE id=?").bind(id).first();
+  if (target && target.role === "admin") {
+    const admins = await c.env.DB.prepare("SELECT count(*) n FROM staff WHERE role='admin'").first();
+    if ((admins?.n || 0) <= 1) return c.json({ error: "last_admin" }, 409);
+  }
+  await c.env.DB.prepare("DELETE FROM staff_groups WHERE staff_id=?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM sessions WHERE subject_id=?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM staff WHERE id=?").bind(id).run();
+  return c.json({ ok: true });
+});
 app.post("/api/requests", async (c) => {
   const b = await c.req.json();
   if (!b.first_name || !b.last_name || !b.isikukood || !b.email) return c.json({ error: "missing_fields" }, 400);
