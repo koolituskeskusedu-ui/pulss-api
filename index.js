@@ -2509,7 +2509,7 @@ app.delete("/api/requests/:id", async (c) => {
 });
 app.post("/api/files", async (c) => {
   const s = await auth(c);
-  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  if (!s) return c.json({ error: "unauthorized" }, 401);
   if (!c.env.FILES) return c.json({ error: "r2_not_configured" }, 500);
   const ct = c.req.header("content-type") || "application/octet-stream";
   const rawName = c.req.header("x-file-name") || "file";
