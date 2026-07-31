@@ -27,9 +27,6 @@ EMAIL_FROM = "arved@example.ee"
 [triggers]
 crons = ["* * * * *"]
 
-[[r2_buckets]]
-binding = "FILES"
-bucket_name = "lms-files"
 
 # Секреты задаются отдельно (не в этом файле):
 #   npx wrangler secret put RESEND_API_KEY      # ключ Resend для реальной отправки
