@@ -19,7 +19,7 @@ bucket_name = "lms-files"
 # ВАЖНО: при cookie-сессиях укажите ТОЧНЫЙ адрес фронтенда (не "*"),
 # например "https://pulss.pages.dev" — иначе браузер не примет httpOnly-cookie.
 # На время локальной разработки можно оставить "*".
-ALLOWED_ORIGIN = "*"
+ALLOWED_ORIGIN = "https://pulss.koolituskeskusedu.workers.dev"
 # Адрес отправителя писем (должен быть подтверждён в Resend).
 EMAIL_FROM = "esmaabi@edu-koolitus.ee"
 
