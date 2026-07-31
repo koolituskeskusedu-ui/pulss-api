@@ -2184,7 +2184,13 @@ function requireRole(session, ...roles) {
 }
 app.get("/api/health", async (c) => {
   const r = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM staff").first();
-  return c.json({ ok: true, staff: r?.n ?? 0, time: nowISO() });
+  const email = {
+    hasKey: !!c.env.BREVO_API_KEY,
+    keyPrefix: c.env.BREVO_API_KEY ? String(c.env.BREVO_API_KEY).slice(0, 8) : null,
+    from: c.env.EMAIL_FROM || null,
+    origin: c.env.ALLOWED_ORIGIN || null
+  };
+  return c.json({ ok: true, staff: r?.n ?? 0, time: nowISO(), email });
 });
 app.post("/api/setup", async (c) => {
   const cnt = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM staff").first();
