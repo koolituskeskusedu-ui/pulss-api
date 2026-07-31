@@ -2428,6 +2428,9 @@ app.delete("/api/students/:id", async (c) => {
     "DELETE FROM quiz_scores WHERE student_id=?",
     "DELETE FROM quiz_attempts WHERE student_id=?",
     "DELETE FROM submissions WHERE student_id=?",
+    "DELETE FROM attendance WHERE student_id=?",
+    "DELETE FROM messages WHERE student_id=?",
+    "DELETE FROM notifications WHERE student_id=?",
     "DELETE FROM students WHERE id=?"
   ]) {
     await c.env.DB.prepare(sql).bind(id).run();
@@ -2731,6 +2734,86 @@ app.put("/api/submissions/:id/grade", async (c) => {
   if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
   const b = await c.req.json();
   await c.env.DB.prepare("UPDATE submissions SET grade=?, feedback=?, graded_by=?, graded_at=? WHERE id=?").bind(b.grade == null ? null : String(b.grade), b.feedback || "", b.graded_by || null, nowISO().slice(0, 10), c.req.param("id")).run();
+  return c.json({ ok: true });
+});
+app.get("/api/meetings", async (c) => {
+  const s = await auth(c);
+  if (!s) return c.json({ error: "unauthorized" }, 401);
+  if (s.role === "student") {
+    const st = await c.env.DB.prepare("SELECT group_id FROM students WHERE id=?").bind(s.id).first();
+    const rows2 = await c.env.DB.prepare("SELECT * FROM meetings WHERE group_id=? ORDER BY date, time").bind(st?.group_id || "").all();
+    return c.json((rows2.results || []).map((m) => ({ ...m, attended: {} })));
+  }
+  const rows = await c.env.DB.prepare("SELECT * FROM meetings ORDER BY date, time").all();
+  const att = await c.env.DB.prepare("SELECT meeting_id, student_id, present FROM attendance").all();
+  const byM = {};
+  for (const a of att.results || []) {
+    (byM[a.meeting_id] = byM[a.meeting_id] || {})[a.student_id] = !!a.present;
+  }
+  return c.json((rows.results || []).map((m) => ({ ...m, attended: byM[m.id] || {} })));
+});
+app.post("/api/meetings", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const b = await c.req.json();
+  if (!b.course_id || !b.group_id || !b.date) return c.json({ error: "missing_fields" }, 400);
+  const id = uid("mt_");
+  await c.env.DB.prepare("INSERT INTO meetings (id,course_id,group_id,title,description,format,link,address,date,time) VALUES (?,?,?,?,?,?,?,?,?,?)").bind(id, b.course_id, b.group_id, b.title || "", b.description || "", b.format || "online", b.link || "", b.address || "", b.date, b.time || "18:00").run();
+  return c.json({ id });
+});
+app.put("/api/meetings/:id", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const b = await c.req.json();
+  await c.env.DB.prepare("UPDATE meetings SET course_id=?,group_id=?,title=?,description=?,format=?,link=?,address=?,date=?,time=? WHERE id=?").bind(b.course_id || "", b.group_id || "", b.title || "", b.description || "", b.format || "online", b.link || "", b.address || "", b.date || "", b.time || "18:00", c.req.param("id")).run();
+  return c.json({ ok: true });
+});
+app.delete("/api/meetings/:id", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  await c.env.DB.prepare("DELETE FROM attendance WHERE meeting_id=?").bind(id).run();
+  await c.env.DB.prepare("DELETE FROM meetings WHERE id=?").bind(id).run();
+  return c.json({ ok: true });
+});
+app.post("/api/meetings/:id/attendance", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const b = await c.req.json();
+  const id = c.req.param("id");
+  await c.env.DB.prepare("DELETE FROM attendance WHERE meeting_id=?").bind(id).run();
+  for (const [sid, present] of Object.entries(b.attended || {})) {
+    if (present) await c.env.DB.prepare("INSERT OR IGNORE INTO attendance (meeting_id, student_id, present) VALUES (?,?,1)").bind(id, sid).run();
+  }
+  return c.json({ ok: true });
+});
+app.get("/api/messages", async (c) => {
+  const s = await auth(c);
+  if (!s) return c.json({ error: "unauthorized" }, 401);
+  const r = s.role === "student" ? await c.env.DB.prepare("SELECT id, student_id, sender, text, ts, read FROM messages WHERE student_id=? ORDER BY ts").bind(s.id).all() : await c.env.DB.prepare("SELECT id, student_id, sender, text, ts, read FROM messages ORDER BY ts").all();
+  return c.json(r.results || []);
+});
+app.post("/api/messages", async (c) => {
+  const s = await auth(c);
+  if (!s) return c.json({ error: "unauthorized" }, 401);
+  const b = await c.req.json();
+  if (!b.text || !String(b.text).trim()) return c.json({ error: "empty" }, 400);
+  const sid = s.role === "student" ? s.id : b.student_id;
+  const sender = s.role === "student" ? "student" : "admin";
+  if (!sid) return c.json({ error: "missing_fields" }, 400);
+  const id = uid("msg_");
+  await c.env.DB.prepare("INSERT INTO messages (id, student_id, sender, text, ts, read) VALUES (?,?,?,?,?,0)").bind(id, sid, sender, String(b.text), nowISO().slice(0, 16).replace("T", " ")).run();
+  return c.json({ id });
+});
+app.post("/api/messages/read", async (c) => {
+  const s = await auth(c);
+  if (!s) return c.json({ error: "unauthorized" }, 401);
+  if (s.role === "student") {
+    await c.env.DB.prepare("UPDATE messages SET read=1 WHERE student_id=? AND sender='admin'").bind(s.id).run();
+  } else {
+    const b = await c.req.json().catch(() => ({}));
+    if (b.student_id) await c.env.DB.prepare("UPDATE messages SET read=1 WHERE student_id=? AND sender='student'").bind(b.student_id).run();
+  }
   return c.json({ ok: true });
 });
 app.get("/api/company-search", async (c) => {
