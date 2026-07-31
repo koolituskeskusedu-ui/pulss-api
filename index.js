@@ -3043,15 +3043,20 @@ app.post("/api/invoices/:id/credit", async (c) => {
 });
 async function sendEmail(env, msg) {
   const from = msg.from || env.EMAIL_FROM;
-  const key = env.RESEND_API_KEY;
+  const key = env.BREVO_API_KEY;
   if (!key || !from) throw new Error("email_not_configured");
-  const res = await fetch("https://api.resend.com/emails", {
+  const res = await fetch("https://api.brevo.com/v3/smtp/email", {
     method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ from, to: [msg.to], subject: msg.subject, text: msg.body })
+    headers: { "api-key": key, "Content-Type": "application/json", "Accept": "application/json" },
+    body: JSON.stringify({
+      sender: { email: from },
+      to: [{ email: msg.to }],
+      subject: msg.subject,
+      textContent: msg.body
+    })
   });
-  if (!res.ok) throw new Error("resend_" + res.status + ": " + (await res.text()).slice(0, 200));
-  return await res.json();
+  if (!res.ok) throw new Error("brevo_" + res.status + ": " + (await res.text()).slice(0, 200));
+  return { ok: true, status: res.status };
 }
 async function flushOutbox(env, limit = 50) {
   const rows = await env.DB.prepare(
