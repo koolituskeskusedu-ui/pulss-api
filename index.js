@@ -2143,6 +2143,13 @@ function tokenFromReq(c) {
 }
 var uid = (p = "") => p + crypto.randomUUID().replace(/-/g, "").slice(0, 12);
 var nowISO = () => (/* @__PURE__ */ new Date()).toISOString();
+function nowTallinn() {
+  try {
+    return new Intl.DateTimeFormat("sv-SE", { timeZone: "Europe/Tallinn", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(/* @__PURE__ */ new Date());
+  } catch (e) {
+    return nowISO().slice(0, 16).replace("T", " ");
+  }
+}
 function makeViitenumber(seq) {
   const base = String(seq).padStart(4, "0");
   const w = [7, 3, 1];
@@ -2494,7 +2501,7 @@ app.post("/api/audit", async (c) => {
   if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
   const b = await c.req.json();
   if (!b.action) return c.json({ error: "missing_fields" }, 400);
-  await c.env.DB.prepare("INSERT INTO audit (id, ts, who, action) VALUES (?,?,?,?)").bind(uid("a_"), nowISO().slice(0, 16).replace("T", " "), b.who || "", String(b.action).slice(0, 500)).run();
+  await c.env.DB.prepare("INSERT INTO audit (id, ts, who, action) VALUES (?,?,?,?)").bind(uid("a_"), nowTallinn(), b.who || "", String(b.action).slice(0, 500)).run();
   return c.json({ ok: true });
 });
 async function staffGroupIds(env, id) {
@@ -2870,7 +2877,7 @@ app.post("/api/messages", async (c) => {
   const sender = s.role === "student" ? "student" : "admin";
   if (!sid) return c.json({ error: "missing_fields" }, 400);
   const id = uid("msg_");
-  await c.env.DB.prepare("INSERT INTO messages (id, student_id, sender, text, ts, read) VALUES (?,?,?,?,?,0)").bind(id, sid, sender, String(b.text), nowISO().slice(0, 16).replace("T", " ")).run();
+  await c.env.DB.prepare("INSERT INTO messages (id, student_id, sender, text, ts, read) VALUES (?,?,?,?,?,0)").bind(id, sid, sender, String(b.text), nowTallinn()).run();
   return c.json({ id });
 });
 app.delete("/api/messages/thread/:studentId", async (c) => {
@@ -3094,7 +3101,7 @@ async function sendEmail(env, msg) {
 }
 async function enqueueAndSend(env, { to, subject, body, type, attachment }) {
   const id = uid("em_");
-  await env.DB.prepare("INSERT INTO outbox (id, to_email, subject, body, type) VALUES (?,?,?,?,?)").bind(id, to || "", subject || "", body || "", type || "info").run();
+  await env.DB.prepare("INSERT INTO outbox (id, to_email, subject, body, type, ts) VALUES (?,?,?,?,?,?)").bind(id, to || "", subject || "", body || "", type || "info", nowTallinn()).run();
   try {
     await sendEmail(env, { to, subject, body, attachment });
     await env.DB.prepare("UPDATE outbox SET sent=1, status='sent', sent_at=? WHERE id=?").bind(nowISO(), id).run();
