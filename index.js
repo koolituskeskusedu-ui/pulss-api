@@ -2483,6 +2483,20 @@ async function createStudent(env, b) {
   await queueCredsEmail(env, { id, ...b }, password);
   return { id, password };
 }
+app.get("/api/audit", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const r = await c.env.DB.prepare("SELECT id, ts, who, action FROM audit ORDER BY ts DESC LIMIT 500").all();
+  return c.json(r.results || []);
+});
+app.post("/api/audit", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const b = await c.req.json();
+  if (!b.action) return c.json({ error: "missing_fields" }, 400);
+  await c.env.DB.prepare("INSERT INTO audit (id, ts, who, action) VALUES (?,?,?,?)").bind(uid("a_"), nowISO().slice(0, 16).replace("T", " "), b.who || "", String(b.action).slice(0, 500)).run();
+  return c.json({ ok: true });
+});
 async function staffGroupIds(env, id) {
   const r = await env.DB.prepare("SELECT group_id FROM staff_groups WHERE staff_id=?").bind(id).all();
   return (r.results || []).map((x) => x.group_id);
@@ -2773,6 +2787,12 @@ app.put("/api/submissions/:id/grade", async (c) => {
   await c.env.DB.prepare("UPDATE submissions SET grade=?, feedback=?, graded_by=?, graded_at=? WHERE id=?").bind(b.grade == null ? null : String(b.grade), b.feedback || "", b.graded_by || null, nowISO().slice(0, 10), c.req.param("id")).run();
   return c.json({ ok: true });
 });
+app.delete("/api/submissions/:id", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  await c.env.DB.prepare("DELETE FROM submissions WHERE id=?").bind(c.req.param("id")).run();
+  return c.json({ ok: true });
+});
 app.get("/api/meetings", async (c) => {
   const s = await auth(c);
   if (!s) return c.json({ error: "unauthorized" }, 401);
@@ -2853,6 +2873,12 @@ app.post("/api/messages", async (c) => {
   await c.env.DB.prepare("INSERT INTO messages (id, student_id, sender, text, ts, read) VALUES (?,?,?,?,?,0)").bind(id, sid, sender, String(b.text), nowISO().slice(0, 16).replace("T", " ")).run();
   return c.json({ id });
 });
+app.delete("/api/messages/thread/:studentId", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  await c.env.DB.prepare("DELETE FROM messages WHERE student_id=?").bind(c.req.param("studentId")).run();
+  return c.json({ ok: true });
+});
 app.post("/api/messages/read", async (c) => {
   const s = await auth(c);
   if (!s) return c.json({ error: "unauthorized" }, 401);
@@ -2896,6 +2922,7 @@ app.get("/api/invoices", async (c) => {
     ...iv,
     paid: !!iv.paid,
     priceIncludesVat: !!iv.price_includes_vat,
+    showParticipants: iv.show_participants === void 0 || iv.show_participants === null ? true : !!iv.show_participants,
     participants: byInv(parts, iv.id).map((p) => ({ studentId: p.student_id, name: p.name, isikukood: p.isikukood })),
     items: byInv(items, iv.id).map((it) => ({ desc: it.descr, qty: it.qty, price: it.price }))
   }));
@@ -2917,7 +2944,7 @@ app.post("/api/invoices", async (c) => {
   await c.env.DB.prepare(
     `INSERT INTO invoices (id, number, number_str, viitenumber, kind, mode, group_id, course_id,
        buyer_name, buyer_regcode, buyer_vatno, buyer_address, buyer_email,
-       vat_rate, price_includes_vat, note, date, due_date, paid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`
+       vat_rate, price_includes_vat, show_participants, note, date, due_date, paid) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`
   ).bind(
     id,
     number,
@@ -2934,6 +2961,7 @@ app.post("/api/invoices", async (c) => {
     b.buyer.email || "",
     b.vatRate ?? 24,
     b.priceIncludesVat ? 1 : 0,
+    b.showParticipants === false ? 0 : 1,
     b.note || "",
     b.date || nowISO().slice(0, 10),
     b.dueDate || null
@@ -2970,7 +2998,7 @@ app.put("/api/invoices/:id", async (c) => {
   if (iv.credited_by || iv.kind === "credit") return c.json({ error: "locked" }, 409);
   await c.env.DB.prepare(
     `UPDATE invoices SET mode=?, group_id=?, course_id=?, buyer_name=?, buyer_regcode=?, buyer_vatno=?, buyer_address=?, buyer_email=?,
-       vat_rate=?, price_includes_vat=?, note=?, date=?, due_date=? WHERE id=?`
+       vat_rate=?, price_includes_vat=?, show_participants=?, note=?, date=?, due_date=? WHERE id=?`
   ).bind(
     b.mode || "group",
     b.groupId || null,
@@ -2982,6 +3010,7 @@ app.put("/api/invoices/:id", async (c) => {
     b.buyer?.email || "",
     b.vatRate ?? 24,
     b.priceIncludesVat ? 1 : 0,
+    b.showParticipants === false ? 0 : 1,
     b.note || "",
     b.date || nowISO().slice(0, 10),
     b.dueDate || null,
