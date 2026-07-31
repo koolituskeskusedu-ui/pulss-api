@@ -21,7 +21,7 @@ bucket_name = "lms-files"
 # На время локальной разработки можно оставить "*".
 ALLOWED_ORIGIN = "*"
 # Адрес отправителя писем (должен быть подтверждён в Resend).
-EMAIL_FROM = "arved@example.ee"
+EMAIL_FROM = "esmaabi@edu-koolitus.ee"
 
 # --- Разбор очереди писем по расписанию (каждую минуту) ---
 [triggers]
