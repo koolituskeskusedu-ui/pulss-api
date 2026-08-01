@@ -2476,14 +2476,31 @@ function genPass() {
 async function queueCredsEmail(env, student, password) {
   const set = await env.DB.prepare("SELECT platform_name FROM settings WHERE id=1").first();
   const tpl = await env.DB.prepare("SELECT subject, body FROM email_templates WHERE type='cred'").first();
+  const platform = set?.platform_name || "Esmaabi koolitused";
   const vars = {
     student: `${student.first_name} ${student.last_name}`,
     login: `${student.first_name} ${student.last_name}`,
     password,
-    platform: set?.platform_name || "Kursused"
+    platform
   };
   const render = (str) => String(str || "").replace(/\{(\w+)\}/g, (m, k) => vars[k] != null ? vars[k] : m);
-  await enqueueAndSend(env, { to: student.email || "", subject: render(tpl?.subject), body: render(tpl?.body), type: "cred" });
+  const defSub = `Tere tulemast! Sinu ligip\xE4\xE4s \u2014 ${platform}`;
+  const defBody = `Tere, ${vars.student}!
+
+Tere tulemast ${platform} \xF5pikeskkonda \u2014 meil on v\xE4ga hea meel, et liitusid!
+
+Siin on Sinu ligip\xE4\xE4suandmed:
+Kasutajanimi: ${vars.login}
+Parool: ${password}
+
+Palun logi sisse ja muuda parool esimesel korral \xE4ra. Platvormil leiad oma kursused, materjalid, kodut\xF6\xF6d ja tunnistused.
+
+Kui midagi j\xE4\xE4b segaseks, vasta lihtsalt sellele kirjale \u2014 aitame alati hea meelega.
+
+Head \xF5ppimist!`;
+  const subject = tpl && tpl.subject ? render(tpl.subject) : defSub;
+  const body = tpl && tpl.body ? render(tpl.body) : defBody;
+  await enqueueAndSend(env, { to: student.email || "", subject, body, type: "cred" });
 }
 async function createStudent(env, b) {
   const id = uid("st_");
@@ -2608,6 +2625,29 @@ app.post("/api/requests", async (c) => {
   await c.env.DB.prepare(
     "INSERT INTO requests (id, first_name, last_name, isikukood, email, group_id) VALUES (?,?,?,?,?,?)"
   ).bind(id, b.first_name, b.last_name, b.isikukood, b.email, gid).run();
+  try {
+    if (b.email) {
+      const set = await c.env.DB.prepare("SELECT platform_name FROM settings WHERE id=1").first();
+      const platform = set && set.platform_name || "Esmaabi koolitused";
+      const tpl = await c.env.DB.prepare("SELECT subject, body FROM email_templates WHERE type='reg'").first();
+      const vars = { student: b.first_name, platform };
+      const render = (str) => String(str || "").replace(/\{(\w+)\}/g, (m, k) => vars[k] != null ? vars[k] : m);
+      const defSub = `Ait\xE4h registreerumast! \u2014 ${platform}`;
+      const defBody = `Tere, ${b.first_name}!
+
+Suur ait\xE4h, et registreerusid meie koolitusele. Sinu taotlus on meieni j\xF5udnud ja ootab kinnitamist.
+
+Niipea kui oleme selle \xFCle vaadanud, saadame Sulle eraldi kirja koos ligip\xE4\xE4suandmetega platvormile.
+
+Kui Sul on vahepeal k\xFCsimusi, vasta julgelt sellele kirjale.
+
+Kohtumiseni koolitusel!`;
+      const subject = tpl && tpl.subject ? render(tpl.subject) : defSub;
+      const body = tpl && tpl.body ? render(tpl.body) : defBody;
+      await enqueueAndSend(c.env, { to: b.email, subject, body, type: "reg" });
+    }
+  } catch (e) {
+  }
   return c.json({ ok: true, id });
 });
 app.get("/api/requests", async (c) => {
@@ -3087,11 +3127,101 @@ app.post("/api/invoices/:id/credit", async (c) => {
   await c.env.DB.prepare("UPDATE invoices SET credited_by=? WHERE id=?").bind(id, orig.id).run();
   return c.json({ id, number, numberStr });
 });
+function emailEscape(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+}
+function emailLinkify(text) {
+  const re = /(https?:\/\/[^\s]+)/g;
+  let out = "", last = 0, m;
+  while (m = re.exec(text)) {
+    out += emailEscape(text.slice(last, m.index));
+    const u = m[1];
+    out += `<a href="${emailEscape(u)}" style="color:#237F52;text-decoration:underline">${emailEscape(u)}</a>`;
+    last = m.index + u.length;
+  }
+  out += emailEscape(text.slice(last));
+  return out;
+}
+function emailBodyToHtml(body) {
+  const lines = String(body || "").split(/\r?\n/);
+  const blocks = [];
+  let para = [];
+  const flush = () => {
+    if (para.length) {
+      blocks.push('<p style="margin:0 0 16px;font-size:15px;line-height:1.65;color:#2b2b2b">' + para.join("<br>") + "</p>");
+      para = [];
+    }
+  };
+  const urlOnly = /^(https?:\/\/\S+)$/i;
+  for (const raw2 of lines) {
+    const line = raw2.trim();
+    if (!line) {
+      flush();
+      continue;
+    }
+    const mm = line.match(urlOnly);
+    if (mm) {
+      flush();
+      let host = mm[1];
+      try {
+        host = new URL(mm[1]).host;
+      } catch (e) {
+      }
+      blocks.push(`<table role="presentation" cellpadding="0" cellspacing="0" style="margin:6px 0 20px"><tr><td style="border-radius:8px;background:#237F52"><a href="${emailEscape(mm[1])}" style="display:inline-block;padding:12px 26px;font-size:15px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:8px">${emailEscape(host)} &rarr;</a></td></tr></table>`);
+      continue;
+    }
+    para.push(emailLinkify(raw2.replace(/^\s+/, "")));
+  }
+  flush();
+  return blocks.join("") || '<p style="margin:0;font-size:15px;line-height:1.65;color:#2b2b2b">&nbsp;</p>';
+}
+function buildEmailHtml(subject, body, brand) {
+  const platform = brand && brand.platform || "pulss.";
+  const seller = brand && brand.seller || "EDU KOOLITUS O\xDC";
+  const year = brand && brand.year || "2026";
+  const inner = emailBodyToHtml(body);
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f4f4f2">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f2;padding:24px 12px">
+<tr><td align="center">
+<table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:14px;overflow:hidden;border:1px solid #e6e6e2">
+  <tr><td style="background:#237F52;padding:22px 32px">
+    <div style="font-family:'Helvetica Neue',Arial,sans-serif;font-size:26px;font-weight:700;color:#ffffff;letter-spacing:-.02em">pulss<span style="color:#bfe3ce">.</span></div>
+    <div style="font-family:'Helvetica Neue',Arial,sans-serif;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#cdeada;margin-top:2px">Esmaabi koolitus</div>
+  </td></tr>
+  <tr><td style="padding:30px 32px 8px;font-family:'Helvetica Neue',Arial,sans-serif">
+    <h1 style="margin:0 0 18px;font-size:19px;font-weight:700;color:#12100E;line-height:1.35">${emailEscape(subject)}</h1>
+    ${inner}
+  </td></tr>
+  <tr><td style="padding:14px 32px 28px">
+    <hr style="border:none;border-top:1px solid #ececea;margin:0 0 14px">
+    <div style="font-family:'Helvetica Neue',Arial,sans-serif;font-size:12px;color:#8a867e;line-height:1.6">${emailEscape(seller)}<br>\xA9 ${year} ${emailEscape(platform)}</div>
+  </td></tr>
+</table>
+</td></tr>
+</table>
+</body></html>`;
+}
 async function sendEmail(env, msg) {
   const from = msg.from || env.EMAIL_FROM;
   const key = env.BREVO_API_KEY;
   if (!key || !from) throw new Error("email_not_configured");
-  const payload = { sender: { email: from }, to: [{ email: msg.to }], subject: msg.subject, textContent: msg.body };
+  const brand = { platform: "pulss.", seller: "EDU KOOLITUS O\xDC", year: nowISO().slice(0, 4) };
+  try {
+    const st = await env.DB.prepare("SELECT platform_name, seller_name FROM settings WHERE id=1").first();
+    if (st) {
+      brand.platform = st.platform_name || brand.platform;
+      brand.seller = st.seller_name || brand.seller;
+    }
+  } catch (e) {
+  }
+  const payload = {
+    sender: { email: from, name: brand.platform },
+    to: [{ email: msg.to }],
+    subject: msg.subject,
+    textContent: msg.body,
+    htmlContent: buildEmailHtml(msg.subject, msg.body, brand)
+  };
   if (msg.attachment && msg.attachment.content && msg.attachment.name) {
     payload.attachment = [{ content: msg.attachment.content, name: msg.attachment.name }];
   }
