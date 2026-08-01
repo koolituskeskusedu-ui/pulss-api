@@ -2507,8 +2507,8 @@ async function createStudent(env, b) {
   const password = b.password || genPass();
   const hash = await hashPassword(password);
   await env.DB.prepare(
-    "INSERT INTO students (id, first_name, last_name, isikukood, email, password_hash, group_id) VALUES (?,?,?,?,?,?,?)"
-  ).bind(id, b.first_name, b.last_name, b.isikukood, b.email || "", hash, b.group_id || null).run();
+    "INSERT INTO students (id, first_name, last_name, isikukood, email, password_hash, group_id, consent_at, consent_version) VALUES (?,?,?,?,?,?,?,?,?)"
+  ).bind(id, b.first_name, b.last_name, b.isikukood, b.email || "", hash, b.group_id || null, b.consent_at || null, b.consent_version || null).run();
   await queueCredsEmail(env, { id, ...b }, password);
   return { id, password };
 }
@@ -2525,6 +2525,183 @@ app.post("/api/audit", async (c) => {
   if (!b.action) return c.json({ error: "missing_fields" }, 400);
   await c.env.DB.prepare("INSERT INTO audit (id, ts, who, action) VALUES (?,?,?,?)").bind(uid("a_"), nowTallinn(), b.who || "", String(b.action).slice(0, 500)).run();
   return c.json({ ok: true });
+});
+async function auditLog(env, who, action) {
+  try {
+    await env.DB.prepare("INSERT INTO audit (id, ts, who, action) VALUES (?,?,?,?)").bind(uid("a_"), nowTallinn(), who || "", String(action).slice(0, 500)).run();
+  } catch (e) {
+  }
+}
+async function whoName(env, s) {
+  if (!s) return "?";
+  if (s.role === "student") {
+    const st = await env.DB.prepare("SELECT first_name, last_name FROM students WHERE id=?").bind(s.id).first();
+    return st ? `${st.first_name} ${st.last_name}` : s.id;
+  }
+  const u = await env.DB.prepare("SELECT name FROM staff WHERE id=?").bind(s.id).first();
+  return u && u.name || s.role;
+}
+async function collectStudentData(env, id) {
+  const student = await env.DB.prepare(
+    "SELECT id, first_name, last_name, isikukood, email, group_id, last_active, completed_at, archived, status, consent_at, consent_version, created_at FROM students WHERE id=?"
+  ).bind(id).first();
+  if (!student) return null;
+  const rows = async (sql) => (await env.DB.prepare(sql).bind(id).all()).results || [];
+  const submissions = await rows("SELECT id, course_id, homework_id, file_name, date, grade, feedback, graded_at FROM submissions WHERE student_id=?");
+  const progress = await rows("SELECT course_id, lesson_id, completed_at FROM progress WHERE student_id=?");
+  const quiz_scores = await rows("SELECT lesson_id, score FROM quiz_scores WHERE student_id=?");
+  const certificates = await rows("SELECT id, number, course_id, date, valid_until, signed_name, signed_at FROM certificates WHERE student_id=?");
+  const messages = await rows("SELECT id, sender, text, ts, read FROM messages WHERE student_id=?");
+  const attendance = await rows("SELECT meeting_id, present FROM attendance WHERE student_id=?");
+  const invoices = (await env.DB.prepare(
+    "SELECT i.number_str AS invoice, i.date, i.due_date, p.name, p.isikukood FROM invoice_participants p JOIN invoices i ON i.id = p.invoice_id WHERE p.student_id=?"
+  ).bind(id).all()).results || [];
+  return { exported_at: nowISO(), student, submissions, progress, quiz_scores, certificates, messages, attendance, invoices };
+}
+app.get("/api/gdpr/export/:id", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin", "teacher")) return c.json({ error: "forbidden" }, 403);
+  const data = await collectStudentData(c.env, c.req.param("id"));
+  if (!data) return c.json({ error: "not_found" }, 404);
+  await auditLog(c.env, await whoName(c.env, s), `GDPR: eksportis andmed \u2014 ${data.student.first_name} ${data.student.last_name}`);
+  return c.json(data);
+});
+app.get("/api/gdpr/me", async (c) => {
+  const s = await auth(c);
+  if (!s || s.role !== "student") return c.json({ error: "forbidden" }, 403);
+  const data = await collectStudentData(c.env, s.id);
+  if (!data) return c.json({ error: "not_found" }, 404);
+  return c.json(data);
+});
+app.post("/api/gdpr/erase/:id", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin")) return c.json({ error: "forbidden" }, 403);
+  const id = c.req.param("id");
+  const student = await c.env.DB.prepare("SELECT first_name, last_name FROM students WHERE id=?").bind(id).first();
+  if (!student) return c.json({ error: "not_found" }, 404);
+  if (c.env.FILES) {
+    const keys = [];
+    const subs = (await c.env.DB.prepare("SELECT file_key FROM submissions WHERE student_id=? AND file_key IS NOT NULL").bind(id).all()).results || [];
+    subs.forEach((r) => r.file_key && keys.push(r.file_key));
+    const certs = (await c.env.DB.prepare("SELECT signed_key, pdf_key FROM certificates WHERE student_id=?").bind(id).all()).results || [];
+    certs.forEach((r) => {
+      if (r.signed_key) keys.push(r.signed_key);
+      if (r.pdf_key) keys.push(r.pdf_key);
+    });
+    for (const k of keys) {
+      try {
+        await c.env.FILES.delete(k);
+      } catch (e) {
+      }
+    }
+  }
+  await c.env.DB.prepare("UPDATE invoice_participants SET name='Kustutatud \xF5pilane', isikukood=NULL WHERE student_id=?").bind(id).run();
+  for (const sql of [
+    "DELETE FROM enrollments WHERE student_id=?",
+    "DELETE FROM progress WHERE student_id=?",
+    "DELETE FROM quiz_scores WHERE student_id=?",
+    "DELETE FROM quiz_attempts WHERE student_id=?",
+    "DELETE FROM submissions WHERE student_id=?",
+    "DELETE FROM attendance WHERE student_id=?",
+    "DELETE FROM messages WHERE student_id=?",
+    "DELETE FROM notifications WHERE student_id=?",
+    "DELETE FROM certificates WHERE student_id=?",
+    "DELETE FROM students WHERE id=?"
+  ]) {
+    await c.env.DB.prepare(sql).bind(id).run();
+  }
+  await auditLog(c.env, await whoName(c.env, s), `GDPR: kustutas k\xF5ik andmed \u2014 ${student.first_name} ${student.last_name}`);
+  return c.json({ ok: true });
+});
+var BACKUP_TABLES = [
+  "settings",
+  "email_templates",
+  "groups",
+  "staff",
+  "staff_groups",
+  "students",
+  "courses",
+  "course_cert",
+  "enrollments",
+  "modules",
+  "lessons",
+  "materials",
+  "homework",
+  "progress",
+  "quiz_scores",
+  "quiz_attempts",
+  "submissions",
+  "meetings",
+  "attendance",
+  "certificates",
+  "invoices",
+  "invoice_participants",
+  "invoice_items",
+  "requests",
+  "messages",
+  "notifications",
+  "outbox",
+  "audit"
+];
+async function makeBackup(env) {
+  const dump = { created_at: nowISO(), version: 1, tables: {} };
+  for (const t of BACKUP_TABLES) {
+    try {
+      dump.tables[t] = (await env.DB.prepare(`SELECT * FROM ${t}`).all()).results || [];
+    } catch (e) {
+      dump.tables[t] = { error: String(e.message || e) };
+    }
+  }
+  const key = "backups/backup-" + nowISO().slice(0, 10) + ".json";
+  const bytes = JSON.stringify(dump);
+  if (env.FILES) await env.FILES.put(key, bytes, { httpMetadata: { contentType: "application/json" } });
+  return { key, bytes, size: bytes.length };
+}
+async function pruneBackups(env, keep = 30) {
+  if (!env.FILES) return;
+  try {
+    const list = await env.FILES.list({ prefix: "backups/" });
+    const objs = (list.objects || []).sort((a, b) => a.key < b.key ? 1 : -1);
+    for (let i = keep; i < objs.length; i++) {
+      try {
+        await env.FILES.delete(objs[i].key);
+      } catch (e) {
+      }
+    }
+  } catch (e) {
+  }
+}
+app.get("/api/backup/now", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin")) return c.json({ error: "forbidden" }, 403);
+  const b = await makeBackup(c.env);
+  await pruneBackups(c.env);
+  await auditLog(c.env, await whoName(c.env, s), "Tegi k\xE4sitsi varukoopia");
+  return new Response(b.bytes, {
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "content-disposition": `attachment; filename="${b.key.split("/").pop()}"`
+    }
+  });
+});
+app.get("/api/backup/list", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin")) return c.json({ error: "forbidden" }, 403);
+  if (!c.env.FILES) return c.json([]);
+  const list = await c.env.FILES.list({ prefix: "backups/" });
+  const objs = (list.objects || []).map((o) => ({ key: o.key, name: o.key.split("/").pop(), size: o.size, uploaded: o.uploaded })).sort((a, b) => a.key < b.key ? 1 : -1);
+  return c.json(objs);
+});
+app.get("/api/backup/file/:name", async (c) => {
+  const s = await auth(c);
+  if (!requireRole(s, "admin")) return c.json({ error: "forbidden" }, 403);
+  if (!c.env.FILES) return c.json({ error: "r2_not_configured" }, 500);
+  const name = c.req.param("name").replace(/[^\w.\-]/g, "");
+  const obj = await c.env.FILES.get("backups/" + name);
+  if (!obj) return c.json({ error: "not_found" }, 404);
+  return new Response(obj.body, {
+    headers: { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="${name}"` }
+  });
 });
 async function staffGroupIds(env, id) {
   const r = await env.DB.prepare("SELECT group_id FROM staff_groups WHERE staff_id=?").bind(id).all();
@@ -2621,10 +2798,13 @@ app.post("/api/requests", async (c) => {
     const g = await c.env.DB.prepare("SELECT id FROM groups WHERE id=?").bind(gid).first();
     if (!g) gid = null;
   }
+  if (!b.consent) return c.json({ error: "consent_required" }, 400);
   const id = uid("r_");
+  const consentAt = nowISO();
+  const consentVersion = b.consent_version || "v1";
   await c.env.DB.prepare(
-    "INSERT INTO requests (id, first_name, last_name, isikukood, email, group_id) VALUES (?,?,?,?,?,?)"
-  ).bind(id, b.first_name, b.last_name, b.isikukood, b.email, gid).run();
+    "INSERT INTO requests (id, first_name, last_name, isikukood, email, group_id, consent_at, consent_version) VALUES (?,?,?,?,?,?,?,?)"
+  ).bind(id, b.first_name, b.last_name, b.isikukood, b.email, gid, consentAt, consentVersion).run();
   try {
     if (b.email) {
       const set = await c.env.DB.prepare("SELECT platform_name FROM settings WHERE id=1").first();
@@ -3408,10 +3588,30 @@ app.get("/", (c) => c.json({ name: "lms-api", ok: true }));
 app.all("*", (c) => c.json({ error: "not_found" }, 404));
 var index_default = {
   fetch: app.fetch,
-  // Крон (см. wrangler.toml [triggers]) разбирает очередь писем.
+  // Крон (см. wrangler.toml [triggers]): подстраховка очереди писем + ежедневный бэкап базы.
   async scheduled(event, env, ctx) {
-    ctx.waitUntil(flushOutbox(env, 100).catch(() => {
-    }));
+    ctx.waitUntil((async () => {
+      try {
+        await flushOutbox(env, 100);
+      } catch (e) {
+      }
+      try {
+        if (env.FILES) {
+          const key = "backups/backup-" + nowISO().slice(0, 10) + ".json";
+          let exists = null;
+          try {
+            exists = await env.FILES.head(key);
+          } catch (e) {
+            exists = null;
+          }
+          if (!exists) {
+            await makeBackup(env);
+            await pruneBackups(env);
+          }
+        }
+      } catch (e) {
+      }
+    })());
   }
 };
 export {
